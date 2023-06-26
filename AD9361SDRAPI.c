@@ -5,6 +5,9 @@
 #include <stdlib.h>
 #include <iio.h>
 #include <math.h>
+#include <complex.h>
+ 
+ typedef double complex cplx;
  
  struct AD9361{
  	struct iio_context *m_ctx;
@@ -100,12 +103,10 @@ VirtualSdrError StartSdr(struct VirtualSdr* virtual)
 	/*
 		Improvements:
 			-Clean this mess
-			-Solve the problem with files
 			-Save the iio_context and iio_buffers in the null pointer to be cleaned in the stopSDR function
 			-Add the part where we put the ports in ON --> Question, only put ON the nodes of always? if port is just only once how do you put later the OFF, is threading an option?
 	*/	
 	
-	struct AD9361* auxVoidPointer;
 	struct iio_context * auxContextAh;
 	if(virtual == NULL)
 	{
@@ -119,15 +120,15 @@ VirtualSdrError StartSdr(struct VirtualSdr* virtual)
 		strcpy(auxContext, "serial:");
 		strcat(auxContext, virtual->m_location);
 		auxContextAh = iio_create_context_from_uri(auxContext);
+		((struct AD9361*) virtual->m_RealSdr)->m_ctx = auxContextAh;
 		
 	}
 	if(virtual->m_connectionType == IP)
 	{
 		strcpy(auxContext, "ip:");
 		strcat(auxContext, virtual->m_location);
-		//((struct AD9361*) virtual-->m_RealSdr).m_ctx = iio_create_context_from_uri(auxContext);
-		auxVoidPointer = (struct AD9361*) virtual->m_RealSdr;
 		auxContextAh = iio_create_context_from_uri(auxContext);	
+		((struct AD9361*) virtual->m_RealSdr)->m_ctx = auxContextAh;
 	}
 	if(auxContextAh == NULL)
 	{
@@ -187,6 +188,7 @@ VirtualSdrError StartSdr(struct VirtualSdr* virtual)
 	
 	struct iio_buffer  **rtxbuf;
 	rtxbuf = (struct iio_buffer**) malloc(numberPorts*sizeof(struct iio_buffer*));
+	((struct AD9361*) virtual->m_RealSdr)->m_rtxBuf = rtxbuf;
 	
 	portIter = virtual->m_ports;
 	
@@ -228,6 +230,7 @@ VirtualSdrError StartSdr(struct VirtualSdr* virtual)
 					t_iter++;
 				}
 				break;
+			case RXFILE:
 			case RXONLYONCE:
 				if(!(get_ad9361_stream_dev(RX, &rtx, auxContextAh)))
 				{
@@ -261,7 +264,7 @@ VirtualSdrError StartSdr(struct VirtualSdr* virtual)
 				}
 				iio_channel_enable(rtx_i);
 				iio_channel_enable(rtx_q);
-				
+				portIter->m_state = ON;
 				rtxbuf[i] = iio_device_create_buffer(rtx, virtual->m_LengthBuffer[i], true);
 				if (!(rtxbuf[i])) {
 					return REALSDRNOTFOUND;
@@ -353,9 +356,25 @@ VirtualSdrError StartSdr(struct VirtualSdr* virtual)
 	return OK;
 }
 
-VirtualSdrError StopSdr(struct VirtualSdr*)
+VirtualSdrError StopSdr(struct VirtualSdr* virtual)
 {
-	return 1;
+	free(((struct AD9361*) virtual->m_RealSdr)->m_ctx);
+	
+	struct PortList* portIter = virtual->m_ports;
+	int iterator = 0;
+	while(portIter != NULL)
+	{
+		if(virtual->m_function[iterator] == TXCONTINUOUSLY || virtual->m_function[iterator] == TXFILECONTINUOUSLY)
+		{
+			portIter->m_state = OFF;
+			free(((struct AD9361*) virtual->m_RealSdr)->m_rtxBuf[iterator]);
+		}
+		iterator++;
+		portIter = portIter->m_next;
+	}
+	free(((struct AD9361*) virtual->m_RealSdr)->m_rtxBuf);
+	
+	return OK;
 }
 
 VirtualSdrError ChargeConfig(struct VirtualSdr* virtual, struct SdrConfig* configuration)
@@ -951,9 +970,9 @@ VirtualSdrError GetFS(struct SdrConfig* configuration, int* buffer)
 	return OK;
 }
 
-VirtualSdrError TransmitOnce(struct VirtualSdr* virtual, SdrPort port, int len, float* I, float*Q)
+VirtualSdrError TransmitOnce(struct VirtualSdr* virtual, SdrPort port, int len, float* I_tx, float*Q_tx)
 {
-	if(virtual == NULL || I == NULL || Q == NULL)
+	if(virtual == NULL || I_tx == NULL || Q_tx == NULL)
 	{
 		return NULLPOINTER;
 	}
@@ -962,8 +981,8 @@ VirtualSdrError TransmitOnce(struct VirtualSdr* virtual, SdrPort port, int len, 
 	while(portIter != NULL){
 		if(portIter->m_type == TX && portIter->m_port == port)
 		{
-			virtual->m_IList[iter] = I;
-			virtual->m_QList[iter] = Q;
+			virtual->m_IList[iter] = I_tx;
+			virtual->m_QList[iter] = Q_tx;
 			virtual->m_LengthBuffer[iter] = len;
 			virtual->m_function[iter] = TXONLYONCE;
 			return OK;
@@ -974,9 +993,9 @@ VirtualSdrError TransmitOnce(struct VirtualSdr* virtual, SdrPort port, int len, 
 	return NOPORT;
 }
 
-VirtualSdrError TransmitAlways(struct VirtualSdr* virtual, SdrPort port, int len, float* I, float* Q)
+VirtualSdrError TransmitAlways(struct VirtualSdr* virtual, SdrPort port, int len, float* I_tx, float* Q_tx)
 {
-	if(virtual == NULL || I == NULL || Q == NULL)
+	if(virtual == NULL || I_tx == NULL || Q_tx == NULL)
 	{
 		return NULLPOINTER;
 	}
@@ -985,8 +1004,8 @@ VirtualSdrError TransmitAlways(struct VirtualSdr* virtual, SdrPort port, int len
 	while(portIter != NULL){
 		if(portIter->m_type == TX && portIter->m_port == port)
 		{
-			virtual->m_IList[iter] = I;
-			virtual->m_QList[iter] = Q;
+			virtual->m_IList[iter] = I_tx;
+			virtual->m_QList[iter] = Q_tx;
 			virtual->m_LengthBuffer[iter] = len;
 			virtual->m_function[iter] = TXCONTINUOUSLY;
 			return OK;
@@ -997,9 +1016,9 @@ VirtualSdrError TransmitAlways(struct VirtualSdr* virtual, SdrPort port, int len
 	return NOPORT;
 }
 
-VirtualSdrError Receive(struct VirtualSdr* virtual, SdrPort port, int len, float* I, float* Q)
+VirtualSdrError Receive(struct VirtualSdr* virtual, SdrPort port, int len, float* I_rx, float* Q_rx)
 {
-	if(virtual == NULL || I == NULL || Q == NULL)
+	if(virtual == NULL || I_rx == NULL || Q_rx == NULL)
 	{
 		return NULLPOINTER;
 	}
@@ -1008,8 +1027,8 @@ VirtualSdrError Receive(struct VirtualSdr* virtual, SdrPort port, int len, float
 	while(portIter != NULL){
 		if(portIter->m_type == RX && portIter->m_port == port)
 		{
-			virtual->m_IList[iter] = I;
-			virtual->m_QList[iter] = Q;
+			virtual->m_IList[iter] = I_rx;
+			virtual->m_QList[iter] = Q_rx;
 			virtual->m_LengthBuffer[iter] = len;
 			virtual->m_function[iter] = RXONLYONCE;
 			return OK;
@@ -1020,29 +1039,389 @@ VirtualSdrError Receive(struct VirtualSdr* virtual, SdrPort port, int len, float
 	return NOPORT;
 }
 
-VirtualSdrError SendSin(struct VirtualSdr*, float, SdrPort)
+VirtualSdrError SendSin(struct VirtualSdr* virtual, float amp, SdrPort port)
 {
-	return 1;
+	float I_tx[2048];
+	float Q_tx[2048];
+  
+	for(int i = 0; i < 2048; i++)
+	{
+	 	I_tx[i] = amp*sin(2*3.14159265359*i/2048);
+		Q_tx[i] = amp*cos(2*3.14159265359*i/2048);
+	}
+
+	return TransmitAlways(virtual, port, 2048, I_tx, Q_tx);
 }
 
-VirtualSdrError FindCompressionPoint(struct VirtualSdr*, SdrPort, SdrPort, float*)
+/*Fast fourier transform (we need this to measure the received signal)*/
+void _fft(cplx buf[], cplx out[], int n, int step)
 {
-	return 1;
+	if (step < n) {
+		_fft(out, buf, n, step * 2);
+		_fft(out + step, buf + step, n, step * 2);
+ 
+		for (int i = 0; i < n; i += 2 * step) {
+			cplx t = cexp(-I * M_PI * i / n) * out[i + step];
+			buf[i / 2]     = out[i] + t;
+			buf[(i + n)/2] = out[i] - t;
+		}
+	}
+}
+ 
+void fft(cplx out[], cplx buf[], int n)
+{
+	//for (int i = 0; i < n; i++) out[i] = buf[i];
+	_fft(buf, out, n, 1);
 }
 
-VirtualSdrError FindIIP3(struct VirtualSdr*, SdrPort, SdrPort, float*)
+/*Functions to apply a window before doing the fft*/
+float hann_offset()
 {
-	return 1;
+	return 1.77f;
 }
 
-VirtualSdrError SaveConfiguration(struct SdrConfig*, char*)
+float hann_window(int n, int l)
 {
-	return 1;
+	return 0.5f*(1.0f-cos(2*M_PI*n/l));
 }
 
-VirtualSdrError LoadConfiguration(struct SdrConfig*, char*)
+
+/*Just a small function to avoid weird-looking code*/
+float calc_compression(float gain,  float attenuation, float recv)
 {
-	return 1;
+	return ((attenuation+gain)-recv);
+}
+
+VirtualSdrError FindCompressionPoint(struct VirtualSdr* virtual, SdrPort inPort, SdrPort outPort, float* result)
+{
+	float I_tx[2048];
+	float Q_tx[2048];
+	float I_rx[2048];
+	float Q_rx[2048];
+	float max, fourier, ref;
+	cplx iq_recv [2048];
+	cplx fourier_recv [2048];
+	bool stopScan = false;
+	for(int i = 0; i < 2048; i++)
+	{
+	 	I_tx[i] = sin(2*M_PI*i/2048);
+		Q_tx[i] = cos(2*M_PI*i/2048);
+	}
+	VirtualSdrError funcRes;
+	
+	funcRes = TransmitAlways(virtual, inPort, 2048, I_tx, Q_tx);
+	if(funcRes != OK)
+	{
+		return funcRes;
+	}
+	funcRes = Receive(virtual, outPort, 2048, I_rx, Q_rx);
+	if(funcRes != OK)
+	{
+		return funcRes;
+	}
+	
+	funcRes = StartSdr(virtual);
+	if(funcRes != OK)
+	{
+		return funcRes;
+	}
+	
+	for(int iteratorRead = 0; iteratorRead<2048; iteratorRead++) 
+	{
+		iq_recv[iteratorRead] = hann_window(iteratorRead,2048)*Q_rx[iteratorRead]+I*hann_window(iteratorRead,2048)*I_rx[iteratorRead]; 
+		// Imag (Q) + Real (I)
+		fourier_recv[iteratorRead] = iq_recv[iteratorRead];
+	}
+	fft(fourier_recv,iq_recv,2048);
+	max = -1000;
+	for(int iter = 1; iter < 2048; iter++)
+	{
+		fourier = hann_offset()+20*log10(2.0/pow(2,11))+ 10*log10((pow(creal(iq_recv[iter]),2)+pow(cimag(iq_recv[iter]),2))/pow(2048/2,2));
+		if(ref < fourier)
+		{
+			ref = fourier;
+		}
+	}
+	
+	int step = 256;
+	int searching = 0;
+	float hardwareGain;
+	
+	struct PortList * current = virtual->m_ports;
+	while(current->m_channel != virtual->m_RxChannel || current->m_type != RX || current->m_port != inPort)
+	{
+		current = current->m_next;
+	}
+	
+	while(!stopScan)
+	{
+		hardwareGain = (double)(-0.25f*(searching+step)); // "attenuation" from 0 to 359 (0 to -89.75)
+		current->m_Amp = hardwareGain;
+		
+		funcRes = StartSdr(virtual);
+		if(funcRes != OK)
+		{
+			return funcRes;
+		}
+		
+		for(int iteratorRead = 0; iteratorRead<2048; iteratorRead++) 
+		{
+			iq_recv[iteratorRead] = hann_window(iteratorRead,2048)*Q_rx[iteratorRead]+I*hann_window(iteratorRead,2048)*I_rx[iteratorRead]; 
+			// Imag (Q) + Real (I)
+			fourier_recv[iteratorRead] = iq_recv[iteratorRead];
+		}
+		fft(fourier_recv,iq_recv,2048);
+		max = -1000;
+		for(int iter = 1; iter < 2048; iter++)
+		{
+			fourier = hann_offset()+20*log10(2.0/pow(2,11))+ 10*log10((pow(creal(iq_recv[iter]),2)+pow(cimag(iq_recv[iter]),2))/pow(2048/2,2));
+			if(max < fourier)
+			{
+				max = fourier;
+			}
+		}
+		
+		if(1 < calc_compression(ref,hardwareGain,max))
+		{
+			searching += step;	
+		}
+		else
+		{
+			if(searching - step*2 > 0)
+			{
+				searching -= 2*step;
+				step*=2;
+			}
+		}
+		while (searching + step >= 360)
+		{
+			step /= 2;
+		}
+		if(step == 0)
+		{
+			stopScan = true;
+		}
+		step /=2;
+		result[0] = -0.25*searching;
+	}
+	
+	
+	return StopSdr(virtual);
+}
+
+VirtualSdrError FindIIP3(struct VirtualSdr* virtual, SdrPort inPort, SdrPort outPort, float* result)
+{
+	float I_tx[2048];
+	float Q_tx[2048];
+	float I_rx[2048];
+	float Q_rx[2048];
+	float poutMax, poutIIP3Max, fourier, ref;
+	cplx iq_recv [2048];
+	cplx fourier_recv [2048];
+	bool stopScan = false;
+	for(int i = 0; i < 2048; i++)
+	{
+	 	I_tx[i] = 0.5*sin(2*M_PI*i/2048)+0.5*sin(1000000*2*M_PI*i/virtual->m_FS);
+		Q_tx[i] = 0.5*cos(2*M_PI*i/2048)+0.5*sin(0500000*2*M_PI*i/virtual->m_FS);
+	}
+	VirtualSdrError funcRes;
+	
+	funcRes = TransmitAlways(virtual, inPort, 2048, I_tx, Q_tx);
+	if(funcRes != OK)
+	{
+		return funcRes;
+	}
+	funcRes = Receive(virtual, outPort, 2048, I_rx, Q_rx);
+	if(funcRes != OK)
+	{
+		return funcRes;
+	}
+	
+	funcRes = StartSdr(virtual);
+	if(funcRes != OK)
+	{
+		return funcRes;
+	}
+	
+	for(int iteratorRead = 0; iteratorRead<2048; iteratorRead++) 
+	{
+		iq_recv[iteratorRead] = hann_window(iteratorRead,2048)*Q_rx[iteratorRead]+I*hann_window(iteratorRead,2048)*I_rx[iteratorRead]; 
+		// Imag (Q) + Real (I)
+		fourier_recv[iteratorRead] = iq_recv[iteratorRead];
+	}
+	fft(fourier_recv,iq_recv,2048);
+	poutMax = -1000;
+	poutIIP3Max = -1000;
+	
+	for(int i = (long)500000*2048/virtual->m_FS-10; i < (long)500000*2048/virtual->m_FS+10;i++)
+	{
+		float auxModule = hann_offset()+20*log10(2.0/pow(2,11))+ 10*log10((pow(creal(iq_recv[i]),2)+pow(cimag(iq_recv[i]),2))/pow(2048/2,2));
+		if(auxModule > poutMax)
+			poutMax = auxModule;
+	}
+	for(int i = (long)1500000*2048/virtual->m_FS-10; i < (long)1500000*2048/virtual->m_FS+10;i++)
+	{
+		float auxModule = hann_offset()+20*log10(2.0/pow(2,11))+ 10*log10((pow(creal(iq_recv[i]),2)+pow(cimag(iq_recv[i]),2))/pow(2048/2,2));
+		if(auxModule > poutMax)
+			poutMax = auxModule;
+	}
+	for(int i = 2048-(long)500000*2048/virtual->m_FS-10; i < 2048-(long)500000*2048/virtual->m_FS+10;i++)
+	{
+		float auxModule = hann_offset()+20*log10(2.0/pow(2,11))+ 10*log10((pow(creal(iq_recv[i]),2)+pow(cimag(iq_recv[i]),2))/pow(2048/2,2));
+		if(auxModule > poutIIP3Max)
+			poutIIP3Max = auxModule;
+	}
+	for(int i = 2048-(long)1500000*2048/virtual->m_FS-10; i < 2048-(long)1500000*2048/virtual->m_FS+10;i++)
+	{
+		float auxModule = hann_offset()+20*log10(2.0/pow(2,11))+ 10*log10((pow(creal(iq_recv[i]),2)+pow(cimag(iq_recv[i]),2))/pow(2048/2,2));
+		if(auxModule > poutIIP3Max)
+			poutIIP3Max = auxModule;
+	}
+	result[0] = poutMax+(poutMax/poutIIP3Max)/2;
+	return StopSdr(virtual);
+}
+
+VirtualSdrError SaveConfiguration(struct SdrConfig* confFile, char* fileName)
+{
+	if(confFile == NULL)
+	{
+		return NULLPOINTER;
+	}
+	
+	FILE* stream = fopen(fileName, "w");
+	if(stream == NULL)
+	{
+		return FILENOTOPEN;
+	}
+	fprintf(stream, "A,%s,%i,%i,%i,%ld,%ld,%ld\n", confFile->m_location, confFile->m_connectionType, confFile->m_activeRxChannel, confFile->m_activeTxChannel, confFile->m_minFS, confFile->m_maxFS, confFile->m_FS);
+	struct ChannelList* iterCh = confFile->m_channels;
+	while(iterCh != NULL)
+	{
+		fprintf(stream, "C,%c,%i,%ld,%ld,%ld,%ld,%f,%f,%i,%i\n", iterCh->m_channel, iterCh->m_type == TX, iterCh->m_minFS, iterCh->m_maxFS, iterCh->m_minFrec, iterCh->m_maxFrec, iterCh->m_minAmp, iterCh->m_maxAmp, iterCh->m_minBw, iterCh->m_maxBw);
+		iterCh = iterCh->m_next;
+	}
+	
+	struct PortList* iterP = confFile->m_ports;
+	while(iterP != NULL)
+	{
+		fprintf(stream, "P,%c,%i,%i,%ld,%f,%i\n", iterP->m_channel, iterP->m_type == TX, iterP->m_port, iterP->m_Frec, iterP->m_Amp, iterP->m_Bw);
+		iterP = iterP->m_next;
+	}
+	fclose(stream);
+	return OK;
+}
+
+VirtualSdrError LoadConfiguration(struct SdrConfig* confFile, char* fileName)
+{
+	if(confFile == NULL)
+	{
+		return NULLPOINTER;
+	}
+	FILE* stream = fopen(fileName, "r");
+	if(stream == NULL)
+	{
+		return FILENOTOPEN;
+	}
+	
+	char* csvParam;
+	char line[1024];
+	char* tok;
+	bool firstCh = true;
+	bool firstP = true;
+	while(NULL != fgets(line, 1024, stream))
+	{
+		csvParam = strdup(line);
+    		tok = strtok(line, ",");
+    		switch (tok[0])
+    		{
+    			case 'A': 
+    				tok = strtok(NULL, ",\n");
+    				strcpy(confFile->m_location, tok);
+    				tok = strtok(NULL, ",\n");
+    				confFile->m_connectionType = atoi(tok);
+    				tok = strtok(NULL, ",\n");
+    				confFile->m_activeRxChannel = atoi(tok);
+    				tok = strtok(NULL, ",\n");
+    				confFile->m_activeTxChannel = atoi(tok);
+    				tok = strtok(NULL, ",\n");
+    				confFile->m_minFS = atol(tok);
+    				tok = strtok(NULL, ",\n");
+    				confFile->m_maxFS = atol(tok);
+    				tok = strtok(NULL, ",\n");
+    				confFile->m_FS = atol(tok);
+    				break;
+    			case 'C': 
+    				struct ChannelList* iterCh = (struct ChannelList*)malloc(sizeof(struct ChannelList));
+    				tok = strtok(NULL, ",\n");
+    				iterCh->m_channel = tok[0];
+    				tok = strtok(NULL, ",\n");
+    				iterCh->m_type = atoi(tok);
+    				tok = strtok(NULL, ",\n");
+    				iterCh->m_minFS = atol(tok);
+    				tok = strtok(NULL, ",\n");
+    				iterCh->m_maxFS = atol(tok);
+    				tok = strtok(NULL, ",\n");
+    				iterCh->m_minFrec = atol(tok);
+    				tok = strtok(NULL, ",\n");
+    				iterCh->m_maxFrec = atol(tok);
+    				tok = strtok(NULL, ",\n");
+    				iterCh->m_minAmp = atof(tok);
+    				tok = strtok(NULL, ",\n");
+    				iterCh->m_maxAmp = atof(tok);
+    				tok = strtok(NULL, ",\n");
+    				iterCh->m_minBw = atoi(tok);
+    				tok = strtok(NULL, ",\n");
+    				iterCh->m_maxBw = atoi(tok);
+    				
+    				if(firstCh)
+    				{
+    					iterCh->m_next = NULL;
+    					confFile->m_channels = iterCh;
+    					firstCh = false;
+    				}
+    				else
+    				{
+	    				struct ChannelList* auxCh;
+	    				auxCh = confFile->m_channels;
+	    				confFile->m_channels = iterCh;
+	    				iterCh->m_next = auxCh;
+    				}
+    				break;
+    			case 'P': 
+    				struct PortList* iterP = (struct PortList*)malloc(sizeof(struct PortList));
+    				tok = strtok(NULL, ",\n");
+    				iterP->m_channel = tok[0];
+    				tok = strtok(NULL, ",\n");
+    				iterP->m_type = atoi(tok);
+    				tok = strtok(NULL, ",\n");
+    				iterP->m_port = atoi(tok);
+    				tok = strtok(NULL, ",\n");
+    				iterP->m_Frec = atol(tok);
+    				tok = strtok(NULL, ",\n");
+    				iterP->m_Amp = atof(tok);
+    				tok = strtok(NULL, ",\n");
+    				iterP->m_Bw = atoi(tok);
+    				
+    				if(firstP)
+    				{
+    					iterP->m_next = NULL;
+    					confFile->m_ports = iterP;
+    					firstP = false;
+    				}
+    				else
+    				{
+	    				struct PortList* auxP;
+	    				auxP = confFile->m_ports;
+	    				confFile->m_ports = iterP;
+	    				iterP->m_next = auxP;
+    				}
+    				break;
+    		}
+
+	}
+	
+	fclose(stream);
+	return OK;
 }
 
 VirtualSdrError TransmitFromFileOnce(struct VirtualSdr* virtual ,SdrPort port ,char* dataFile)
